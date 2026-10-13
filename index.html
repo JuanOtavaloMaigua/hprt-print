@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>HPRT Web Print</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: una columna de herramienta — estado arriba, plantilla + editor CPCL, acción, log */
+:root{
+  --bg:#f3f4f2; --surface:#ffffff; --fg:#1d2320; --muted:#5f6b65; --line:#d9ddd9;
+  --accent:#e08a00; --accent-fg:#1d1400; --ok:#1f7a4d; --err:#b3261e; --code-bg:#f7f8f6;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#141816; --surface:#1c211e; --fg:#e7ebe8; --muted:#97a39c; --line:#2e3532;
+  --accent:#f5a524; --accent-fg:#1d1400; --ok:#4cc38a; --err:#ff8a80; --code-bg:#171b19; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#141816; --surface:#1c211e; --fg:#e7ebe8; --muted:#97a39c; --line:#2e3532;
+  --accent:#f5a524; --accent-fg:#1d1400; --ok:#4cc38a; --err:#ff8a80; --code-bg:#171b19; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:15px;line-height:1.5}
+.wrap{max-width:640px;margin:0 auto;padding-inline:16px;padding-block:20px 40px;display:flex;flex-direction:column;gap:16px}
+h1{font-size:1.35rem;margin:0;font-weight:600;text-wrap:balance}
+.sub{color:var(--muted);margin:2px 0 0;font-size:.9rem}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.label{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.status{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--muted);flex:none}
+.dot.on{background:var(--ok)} .dot.bad{background:var(--err)}
+.status b{font-weight:600}
+.meta{font-family:var(--f-mono);font-size:.78rem;color:var(--muted);word-break:break-all}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+button{font:inherit;font-weight:600;border-radius:8px;padding:11px 16px;border:1px solid var(--line);background:var(--surface);color:var(--fg);cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button:focus-visible,select:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.grow{flex:1 1 auto}
+select,textarea,input{font:inherit;color:var(--fg);background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:9px 10px;width:100%;box-sizing:border-box}
+textarea{font-family:var(--f-mono);font-size:.82rem;min-height:220px;resize:vertical;line-height:1.45}
+.opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.opts label{display:flex;flex-direction:column;gap:4px;font-size:.82rem;color:var(--muted)}
+.check{flex-direction:row!important;align-items:center;gap:8px!important}
+.check input{width:auto}
+#log{font-family:var(--f-mono);font-size:.76rem;background:var(--code-bg);border:1px solid var(--line);border-radius:8px;padding:10px;max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;margin:0}
+.e{color:var(--err)} .o{color:var(--ok)}
+.warn{border-color:var(--err);color:var(--err);font-size:.9rem}
+.hint{font-size:.82rem;color:var(--muted);margin:0}
+code{font-family:var(--f-mono);font-size:.85em}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <h1>HPRT Web Print</h1>
+    <p class="sub">Prueba de impresión CPCL desde Chrome Android vía Web Bluetooth · HM-A300E · 203 dpi · 72 mm</p>
+  </header>
+
+  <div class="panel warn" id="unsupported" hidden>Este navegador no tiene Web Bluetooth. Abre la página en Chrome (Android o escritorio) con Bluetooth y ubicación activados.</div>
+
+  <section class="panel">
+    <span class="label">Impresora</span>
+    <div class="status"><span class="dot" id="dot"></span><b id="stateTxt">Desconectada</b></div>
+    <div class="meta" id="meta">Toca «Conectar» y elige HM-A300-xxxx en la lista.</div>
+    <div class="row">
+      <button class="primary grow" id="btnConnect">Conectar</button>
+      <button id="btnDisconnect" disabled>Desconectar</button>
+    </div>
+    <p class="hint">Cierra nRF Connect antes de conectar: la impresora acepta un solo cliente BLE a la vez.</p>
+  </section>
+
+  <section class="panel">
+    <span class="label">Trabajo</span>
+    <div class="opts">
+      <label>Plantilla
+        <select id="tpl">
+          <option value="test">Prueba simple</option>
+          <option value="product" selected>Etiqueta de producto</option>
+          <option value="qr">Código QR</option>
+        </select>
+      </label>
+      <label>Alto etiqueta (mm)
+        <input id="hmm" type="number" min="10" max="200" value="40">
+      </label>
+      <label>Copias
+        <input id="copies" type="number" min="1" max="20" value="1">
+      </label>
+    </div>
+    <label class="check"><input type="checkbox" id="useForm" checked> Avanzar a la siguiente etiqueta (FORM, papel con gap)</label>
+    <textarea id="cpcl" spellcheck="false" aria-label="Comandos CPCL"></textarea>
+    <p class="hint">Edita el CPCL libremente. Los acentos se convierten a ASCII antes de enviar.</p>
+    <button class="primary" id="btnPrint" disabled>Imprimir</button>
+  </section>
+
+  <section class="panel">
+    <span class="label">Registro</span>
+    <pre id="log"></pre>
+  </section>
+</div>
+
+<script>
+const SERVICES = [
+  '49535343-fe7d-4ae5-8fa9-9fafd205e455', // UART transparente (ISSC/Microchip)
+  0xff00, 0xff10, 0xff80, 0xfee7,
+  'e7810a71-73ae-499d-8c15-faa9aef0c3f2', 0x18f0, 0xffe0
+];
+const PREFERRED_CHAR = '49535343-8841-43f4-a8d4-ecbe34729bb3';
+const DPMM = 8; // 203 dpi
+const CHUNK = 100;
+
+let device=null, chr=null;
+const $=id=>document.getElementById(id);
+const logEl=$('log');
+function log(msg,cls){const s=document.createElement('span');if(cls)s.className=cls;s.textContent=msg+'\n';logEl.appendChild(s);logEl.scrollTop=logEl.scrollHeight}
+function setState(txt,kind){$('stateTxt').textContent=txt;$('dot').className='dot'+(kind?' '+kind:'')}
+
+const today=new Date().toISOString().slice(0,10);
+function templates(h,copies,form){
+  const tail=(form?'FORM\r\n':'')+'PRINT\r\n';
+  return {
+    test:
+`! 0 200 200 ${h} ${copies}
+TEXT 4 0 20 20 Hola desde la web
+TEXT 7 0 20 90 HPRT HM-A300E OK
+TEXT 7 0 20 120 ${today}
+${tail}`,
+    product:
+`! 0 200 200 ${h} ${copies}
+TEXT 7 0 20 10 KENTEX
+TEXT 4 0 20 35 Camiseta polo
+TEXT 7 0 20 95 Talla: M   Color: Azul
+TEXT 4 0 400 85 $12.50
+BARCODE 128 1 1 60 20 130 KTX-000123
+TEXT 7 0 20 195 KTX-000123
+${tail}`,
+    qr:
+`! 0 200 200 ${h} ${copies}
+TEXT 4 0 20 20 Escanea
+B QR 330 10 M 2 U 6
+MA,https://example.com/p/KTX-000123
+ENDQR
+TEXT 7 0 20 90 KTX-000123
+${tail}`
+  };
+}
+function refreshTpl(){
+  const h=Math.max(10,parseInt($('hmm').value)||40)*DPMM;
+  const c=Math.max(1,parseInt($('copies').value)||1);
+  $('cpcl').value=templates(h,c,$('useForm').checked)[$('tpl').value];
+}
+['tpl','hmm','copies','useForm'].forEach(id=>$(id).addEventListener('change',refreshTpl));
+refreshTpl();
+
+if(!navigator.bluetooth){$('unsupported').hidden=false;$('btnConnect').disabled=true;log('Web Bluetooth no disponible en este navegador.','e')}
+
+async function findWritable(server){
+  const services=await server.getPrimaryServices();
+  const found=[];
+  for(const s of services){
+    let chars=[];try{chars=await s.getCharacteristics()}catch(e){continue}
+    for(const c of chars){
+      const p=c.properties;
+      log(`· ${s.uuid.slice(0,8)} / ${c.uuid.slice(0,8)} ${p.write?'W ':''}${p.writeWithoutResponse?'WNR ':''}${p.notify?'N':''}`);
+      if(p.write||p.writeWithoutResponse) found.push(c);
+    }
+  }
+  return found.find(c=>c.uuid===PREFERRED_CHAR)||found.find(c=>c.service.uuid.startsWith('49535343'))||found[0]||null;
+}
+
+$('btnConnect').onclick=async()=>{
+  try{
+    setState('Buscando…');
+    device=await navigator.bluetooth.requestDevice({
+      filters:[{namePrefix:'HM-'},{namePrefix:'HPRT'}],
+      optionalServices:SERVICES
+    });
+    device.addEventListener('gattserverdisconnected',onDisc);
+    log(`Dispositivo: ${device.name}`);
+    setState('Conectando…');
+    const server=await device.gatt.connect();
+    log('GATT conectado. Buscando característica de escritura…');
+    chr=await findWritable(server);
+    if(!chr) throw new Error('No se encontró ninguna característica con permiso de escritura.');
+    $('meta').textContent=`${device.name} · servicio ${chr.service.uuid} · característica ${chr.uuid}`;
+    log(`Usando ${chr.uuid}`,'o');
+    setState('Conectada','on');
+    $('btnPrint').disabled=false;$('btnDisconnect').disabled=false;
+  }catch(e){
+    log('Error: '+e.message,'e');
+    setState(device?.gatt?.connected?'Conectada sin escritura':'Desconectada','bad');
+  }
+};
+function onDisc(){chr=null;setState('Desconectada');$('btnPrint').disabled=true;$('btnDisconnect').disabled=true;log('Impresora desconectada.')}
+$('btnDisconnect').onclick=()=>{try{device?.gatt?.disconnect()}catch(e){}};
+
+function toBytes(text){
+  const ascii=text.normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\r?\n/g,'\r\n');
+  const out=new Uint8Array(ascii.length);
+  for(let i=0;i<ascii.length;i++){const c=ascii.charCodeAt(i);out[i]=c<128?c:63}
+  return out;
+}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function send(bytes){
+  const wnr=chr.properties.writeWithoutResponse;
+  for(let i=0;i<bytes.length;i+=CHUNK){
+    const part=bytes.slice(i,i+CHUNK);
+    if(wnr){await chr.writeValueWithoutResponse(part);await sleep(20)}
+    else await chr.writeValueWithResponse(part);
+  }
+}
+$('btnPrint').onclick=async()=>{
+  if(!chr) return;
+  const btn=$('btnPrint');btn.disabled=true;btn.textContent='Enviando…';
+  try{
+    const bytes=toBytes($('cpcl').value);
+    const t=performance.now();
+    await send(bytes);
+    log(`Enviado: ${bytes.length} bytes en ${Math.round(performance.now()-t)} ms`,'o');
+  }catch(e){log('Error al enviar: '+e.message,'e')}
+  finally{btn.disabled=!chr;btn.textContent='Imprimir'}
+};
+</script>
+</body>
+</html>

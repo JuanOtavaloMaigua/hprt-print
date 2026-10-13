@@ -69,6 +69,24 @@ code{font-family:var(--f-mono);font-size:.85em}
       <button id="btnDisconnect" disabled>Desconectar</button>
     </div>
     <p class="hint">Cierra nRF Connect antes de conectar: la impresora acepta un solo cliente BLE a la vez.</p>
+    <div class="opts">
+      <label>Canal de escritura
+        <select id="chrSel" disabled><option>Conecta primero</option></select>
+      </label>
+      <label>Tamaño de bloque
+        <select id="chunk">
+          <option value="20" selected>20 bytes (seguro)</option>
+          <option value="100">100 bytes</option>
+          <option value="180">180 bytes</option>
+        </select>
+      </label>
+      <label>Modo de escritura
+        <select id="wmode">
+          <option value="wnr" selected>Sin respuesta (rápido)</option>
+          <option value="wr">Con respuesta</option>
+        </select>
+      </label>
+    </div>
   </section>
 
   <section class="panel">
@@ -76,9 +94,16 @@ code{font-family:var(--f-mono);font-size:.85em}
     <div class="opts">
       <label>Plantilla
         <select id="tpl">
+          <option value="receipt" selected>Recibo de venta</option>
           <option value="test">Prueba simple</option>
-          <option value="product" selected>Etiqueta de producto</option>
+          <option value="product">Etiqueta de producto</option>
           <option value="qr">Código QR</option>
+        </select>
+      </label>
+      <label>Ancho papel
+        <select id="pw">
+          <option value="576" selected>80 mm</option>
+          <option value="384">58 mm</option>
         </select>
       </label>
       <label>Alto etiqueta (mm)
@@ -88,7 +113,7 @@ code{font-family:var(--f-mono);font-size:.85em}
         <input id="copies" type="number" min="1" max="20" value="1">
       </label>
     </div>
-    <label class="check"><input type="checkbox" id="useForm" checked> Avanzar a la siguiente etiqueta (FORM, papel con gap)</label>
+    <label class="check"><input type="checkbox" id="useForm"> Avanzar a la siguiente etiqueta (FORM, papel con gap)</label>
     <textarea id="cpcl" spellcheck="false" aria-label="Comandos CPCL"></textarea>
     <p class="hint">Edita el CPCL libremente. Los acentos se convierten a ASCII antes de enviar.</p>
     <button class="primary" id="btnPrint" disabled>Imprimir</button>
@@ -108,7 +133,7 @@ const SERVICES = [
 ];
 const PREFERRED_CHAR = '49535343-8841-43f4-a8d4-ecbe34729bb3';
 const DPMM = 8; // 203 dpi
-const CHUNK = 100;
+let writables=[];
 
 let device=null, chr=null;
 const $=id=>document.getElementById(id);
@@ -145,29 +170,112 @@ TEXT 7 0 20 90 KTX-000123
 ${tail}`
   };
 }
+// Recibo de prueba con datos ficticios. Altura calculada según el número de líneas.
+function receipt(pw,copies,form){
+  const W=Math.floor((pw-24)/12);   // font 7 = 12 dots de ancho
+  const W4=Math.floor((pw-24)/24);  // font 4 = 24 dots de ancho
+  const money=n=>n.toFixed(2);
+  const pad=(l,r,w=W)=>{l=String(l);r=String(r);if(l.length+r.length+1>w)l=l.slice(0,w-r.length-1);return l+' '.repeat(w-l.length-r.length)+r};
+  const items=[
+    ['Camiseta polo azul T-M',2,12.50],
+    ['Jean clasico T-32',1,24.90],
+    ['Medias deportivas x3',3,4.75],
+    ['Chompa de lana T-L',1,38.00]
+  ];
+  const now=new Date();
+  const fecha=now.toLocaleDateString('es-EC')+' '+now.toTimeString().slice(0,5);
+  const num='001-001-'+String(Math.floor(Math.random()*999999)).padStart(9,'0');
+  const out=[];let y=10;
+  const T=(t,f=7,h=30,x=12)=>{out.push(`TEXT ${f} 0 ${x} ${y} ${t}`);y+=h};
+  const sep=()=>T('-'.repeat(W),7,30);
+
+  out.push('CENTER');
+  T('TIENDA DEMO TEXTIL',4,56,0);
+  T('RUC 1799999999001',7,28,0);
+  T('Av. Ejemplo 123 y Calle Falsa',7,28,0);
+  T('Quito - Ecuador',7,36,0);
+  out.push('LEFT');
+  sep();
+  T(pad('Recibo:',num));
+  T(pad('Fecha:',fecha));
+  T(pad('Cliente:','Consumidor Final'));
+  T(pad('Cajero:','Juan'));
+  sep();
+  T(pad('Descripcion','Total'));
+  sep();
+  let sub=0;
+  for(const [name,q,p] of items){
+    const t=q*p;sub+=t;
+    T(name,7,28);
+    T(pad(`  ${q} x ${money(p)}`,money(t)));
+  }
+  sep();
+  const iva=Math.round(sub*0.15*100)/100, total=sub+iva, pago=Math.ceil(total/10)*10;
+  T(pad('Subtotal:',money(sub)));
+  T(pad('IVA 15%:',money(iva)),7,38);
+  out.push('SETBOLD 1');
+  T(pad('TOTAL',`$${money(total)}`,W4),4,60);
+  out.push('SETBOLD 0');
+  T(pad('Efectivo:',money(pago)));
+  T(pad('Cambio:',money(pago-total)),7,40);
+  out.push('CENTER');
+  out.push(`BARCODE 128 1 1 50 0 ${y} ${num.replace(/-/g,'')}`);y+=60;
+  T(num,7,40,0);
+  T('Gracias por su compra',7,30,0);
+  T('*** DOCUMENTO DE PRUEBA ***',7,30,0);
+  T('Sin validez tributaria',7,30,0);
+  out.push('LEFT');
+  const h=y+60;
+  return `! 0 200 200 ${h} ${copies}\nPAGE-WIDTH ${pw}\n`+out.join('\n')+'\n'+(form?'FORM\n':'')+'PRINT\n';
+}
 function refreshTpl(){
   const h=Math.max(10,parseInt($('hmm').value)||40)*DPMM;
   const c=Math.max(1,parseInt($('copies').value)||1);
-  $('cpcl').value=templates(h,c,$('useForm').checked)[$('tpl').value];
+  const pw=parseInt($('pw').value)||576;
+  const form=$('useForm').checked;
+  $('cpcl').value = $('tpl').value==='receipt' ? receipt(pw,c,form) : templates(h,c,form)[$('tpl').value];
+  $('hmm').disabled = $('tpl').value==='receipt';
 }
-['tpl','hmm','copies','useForm'].forEach(id=>$(id).addEventListener('change',refreshTpl));
+$('tpl').addEventListener('change',()=>{$('useForm').checked=$('tpl').value!=='receipt';refreshTpl()});
+['pw','hmm','copies','useForm'].forEach(id=>$(id).addEventListener('change',refreshTpl));
 refreshTpl();
 
-if(!navigator.bluetooth){$('unsupported').hidden=false;$('btnConnect').disabled=true;log('Web Bluetooth no disponible en este navegador.','e')}
+if(!('bluetooth' in navigator)){$('unsupported').hidden=false;$('btnConnect').disabled=true;log('Web Bluetooth no disponible en este navegador.','e')}
 
-async function findWritable(server){
+const short=u=>u.startsWith('0000')&&u.endsWith('-0000-1000-8000-00805f9b34fb')?'0x'+u.slice(4,8):u.slice(0,8)+'…'+u.slice(-4);
+async function scanWritables(server){
   const services=await server.getPrimaryServices();
   const found=[];
   for(const s of services){
     let chars=[];try{chars=await s.getCharacteristics()}catch(e){continue}
     for(const c of chars){
       const p=c.properties;
-      log(`· ${s.uuid.slice(0,8)} / ${c.uuid.slice(0,8)} ${p.write?'W ':''}${p.writeWithoutResponse?'WNR ':''}${p.notify?'N':''}`);
+      log(`· ${short(s.uuid)} / ${short(c.uuid)} ${p.write?'W ':''}${p.writeWithoutResponse?'WNR ':''}${p.notify?'N':''}`);
       if(p.write||p.writeWithoutResponse) found.push(c);
+      if(p.notify){
+        // Escuchar lo que responda la impresora (estado, errores, control de flujo)
+        c.addEventListener('characteristicvaluechanged',ev=>{
+          const b=new Uint8Array(ev.target.value.buffer);
+          log(`← ${short(c.uuid)}: ${[...b].map(x=>x.toString(16).padStart(2,'0')).join(' ')}`);
+        });
+        c.startNotifications().catch(()=>{});
+      }
     }
   }
-  return found.find(c=>c.uuid===PREFERRED_CHAR)||found.find(c=>c.service.uuid.startsWith('49535343'))||found[0]||null;
+  return found;
 }
+function fillChrSel(){
+  const sel=$('chrSel');sel.innerHTML='';
+  writables.forEach((c,i)=>{
+    const o=document.createElement('option');o.value=i;
+    o.textContent=`${short(c.service.uuid)} / ${short(c.uuid)}${c.properties.writeWithoutResponse?' · WNR':''}`;
+    sel.appendChild(o);
+  });
+  let idx=writables.findIndex(c=>c.uuid===PREFERRED_CHAR);
+  if(idx<0) idx=0;
+  sel.value=idx;sel.disabled=false;chr=writables[idx];
+}
+$('chrSel').addEventListener('change',()=>{chr=writables[+$('chrSel').value];log(`Canal: ${chr.uuid}`,'o');$('meta').textContent=`${device.name} · ${chr.service.uuid} / ${chr.uuid}`});
 
 $('btnConnect').onclick=async()=>{
   try{
@@ -181,8 +289,10 @@ $('btnConnect').onclick=async()=>{
     setState('Conectando…');
     const server=await device.gatt.connect();
     log('GATT conectado. Buscando característica de escritura…');
-    chr=await findWritable(server);
-    if(!chr) throw new Error('No se encontró ninguna característica con permiso de escritura.');
+    writables=await scanWritables(server);
+    if(!writables.length) throw new Error('No se encontró ninguna característica con permiso de escritura.');
+    fillChrSel();
+    $('unsupported').hidden=true;
     $('meta').textContent=`${device.name} · servicio ${chr.service.uuid} · característica ${chr.uuid}`;
     log(`Usando ${chr.uuid}`,'o');
     setState('Conectada','on');
@@ -202,12 +312,20 @@ function toBytes(text){
   return out;
 }
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const withTimeout=(p,ms)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error(`la impresora no respondió en ${ms/1000}s`)),ms))]);
 async function send(bytes){
-  const wnr=chr.properties.writeWithoutResponse;
-  for(let i=0;i<bytes.length;i+=CHUNK){
-    const part=bytes.slice(i,i+CHUNK);
-    if(wnr){await chr.writeValueWithoutResponse(part);await sleep(20)}
-    else await chr.writeValueWithResponse(part);
+  const size=parseInt($('chunk').value)||20;
+  const wantWnr=$('wmode').value==='wnr';
+  const wnr=wantWnr?chr.properties.writeWithoutResponse:!chr.properties.write;
+  const total=Math.ceil(bytes.length/size);
+  log(`Enviando ${bytes.length} bytes en ${total} bloques de ${size} (${wnr?'sin':'con'} respuesta)…`);
+  for(let i=0,n=1;i<bytes.length;i+=size,n++){
+    const part=bytes.slice(i,i+size);
+    try{
+      if(wnr){await withTimeout(chr.writeValueWithoutResponse(part),4000);await sleep(15)}
+      else await withTimeout(chr.writeValueWithResponse(part),4000);
+    }catch(e){throw new Error(`bloque ${n}/${total}: ${e.message}`)}
+    if(n===1||n%10===0||n===total) log(`  ${n}/${total}`);
   }
 }
 $('btnPrint').onclick=async()=>{
